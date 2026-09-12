@@ -2,13 +2,16 @@
 //  Archive+Reading.swift
 //  ZIPFoundation
 //
-//  Copyright © 2017-2021 Thomas Zoechling, https://www.peakstep.com and the ZIP Foundation project authors.
+//  Copyright © 2017-2026 Thomas Zoechling, https://www.peakstep.com and the ZIP Foundation project authors.
 //  Released under the MIT License.
 //
 //  See https://github.com/weichsel/ZIPFoundation/blob/master/LICENSE for license information.
 //
 
 import Foundation
+#if canImport(Android)
+import Android
+#endif
 
 extension Archive {
     /// Read a ZIP `Entry` from the receiver and write it to `url`.
@@ -18,10 +21,14 @@ extension Archive {
     ///   - url: The destination file URL.
     ///   - bufferSize: The maximum size of the read buffer and the decompression buffer (if needed).
     ///   - skipCRC32: Optional flag to skip calculation of the CRC32 checksum to improve performance.
+    ///   - symlinksValidWithin: Any symlink target that resolves outside this URL is rejected for security reasons.
+    ///                          Pass `.rootFS` to allow symlinks to point anywhere on the filesystem.
     ///   - progress: A progress object that can be used to track or cancel the extract operation.
     /// - Returns: The checksum of the processed content or 0 if the `skipCRC32` flag was set to `true`.
     /// - Throws: An error if the destination file cannot be written or the entry contains malformed content.
-    public func extract(_ entry: Entry, to url: URL, bufferSize: UInt32 = defaultReadChunkSize, skipCRC32: Bool = false,
+    public func extract(_ entry: Entry, to url: URL, bufferSize: Int = defaultReadChunkSize,
+                        skipCRC32: Bool = false,
+                        symlinksValidWithin: URL? = nil,
                         progress: Progress? = nil) throws -> CRC32 {
         guard bufferSize > 0 else {
             throw ArchiveError.invalidBufferSize
@@ -30,13 +37,13 @@ extension Archive {
         var checksum = CRC32(0)
         switch entry.type {
         case .file:
-            guard !fileManager.itemExists(at: url) else {
+            guard fileManager.itemExists(at: url) == false else {
                 throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: url.path])
             }
             try fileManager.createParentDirectoryStructure(for: url)
             let destinationRepresentation = fileManager.fileSystemRepresentation(withPath: url.path)
-            guard let destinationFile: UnsafeMutablePointer<FILE> = fopen(destinationRepresentation, "wb+") else {
-                throw CocoaError(.fileNoSuchFile)
+            guard let destinationFile: FILEPointer = fopen(destinationRepresentation, "wb+") else {
+                throw POSIXError(errno, path: url.path)
             }
             defer { fclose(destinationFile) }
             let consumer = { _ = try Data.write(chunk: $0, to: destinationFile) }
@@ -49,19 +56,25 @@ extension Archive {
             checksum = try self.extract(entry, bufferSize: bufferSize, skipCRC32: skipCRC32,
                                         progress: progress, consumer: consumer)
         case .symlink:
-            guard !fileManager.itemExists(at: url) else {
+            guard fileManager.itemExists(at: url) == false else {
                 throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: url.path])
             }
             let consumer = { (data: Data) in
                 guard let linkPath = String(data: data, encoding: .utf8) else { throw ArchiveError.invalidEntryPath }
+
+                let parentURL = url.deletingLastPathComponent()
+                let isAbsolutePath = (linkPath as NSString).isAbsolutePath
+                let linkURL = URL(fileURLWithPath: linkPath, relativeTo: isAbsolutePath ? nil : parentURL)
+                let isContained = linkURL.isContained(in: symlinksValidWithin ?? parentURL)
+                guard isContained else { throw ArchiveError.uncontainedSymlink }
+
                 try fileManager.createParentDirectoryStructure(for: url)
                 try fileManager.createSymbolicLink(atPath: url.path, withDestinationPath: linkPath)
             }
             checksum = try self.extract(entry, bufferSize: bufferSize, skipCRC32: skipCRC32,
                                         progress: progress, consumer: consumer)
         }
-        let attributes = FileManager.attributes(from: entry)
-        try fileManager.setAttributes(attributes, ofItemAtPath: url.path)
+        try fileManager.transferAttributes(from: entry, toItemAtURL: url)
         return checksum
     }
 
@@ -75,14 +88,15 @@ extension Archive {
     ///   - consumer: A closure that consumes contents of `Entry` as `Data` chunks.
     /// - Returns: The checksum of the processed content or 0 if the `skipCRC32` flag was set to `true`..
     /// - Throws: An error if the destination file cannot be written or the entry contains malformed content.
-    public func extract(_ entry: Entry, bufferSize: UInt32 = defaultReadChunkSize, skipCRC32: Bool = false,
+    public func extract(_ entry: Entry, bufferSize: Int = defaultReadChunkSize, skipCRC32: Bool = false,
                         progress: Progress? = nil, consumer: Consumer) throws -> CRC32 {
         guard bufferSize > 0 else {
             throw ArchiveError.invalidBufferSize
         }
         var checksum = CRC32(0)
         let localFileHeader = entry.localFileHeader
-        fseek(self.archiveFile, entry.dataOffset, SEEK_SET)
+        guard entry.dataOffset <= .max else { throw ArchiveError.invalidLocalHeaderDataOffset }
+        fseeko(self.archiveFile, zip_off_t(entry.dataOffset), SEEK_SET)
         progress?.totalUnitCount = self.totalUnitCountForReading(entry)
         switch entry.type {
         case .file:
@@ -99,41 +113,10 @@ extension Archive {
             try consumer(Data())
             progress?.completedUnitCount = self.totalUnitCountForReading(entry)
         case .symlink:
-            let localFileHeader = entry.localFileHeader
-            let size = Int(localFileHeader.compressedSize)
-            let data = try Data.readChunk(of: size, from: self.archiveFile)
-            checksum = data.crc32(checksum: 0)
-            try consumer(data)
-            progress?.completedUnitCount = self.totalUnitCountForReading(entry)
+            checksum = try self.readSymbolicLink(entry: entry, bufferSize: bufferSize,
+                                                 skipCRC32: skipCRC32, progress: progress, with: consumer)
+
         }
         return checksum
-    }
-
-    // MARK: - Helpers
-
-    private func readUncompressed(entry: Entry, bufferSize: UInt32, skipCRC32: Bool,
-                                  progress: Progress? = nil, with consumer: Consumer) throws -> CRC32 {
-        let size = Int(entry.centralDirectoryStructure.uncompressedSize)
-        return try Data.consumePart(of: size, chunkSize: Int(bufferSize), skipCRC32: skipCRC32,
-                                    provider: { (_, chunkSize) -> Data in
-            return try Data.readChunk(of: Int(chunkSize), from: self.archiveFile)
-        }, consumer: { (data) in
-            if progress?.isCancelled == true { throw ArchiveError.cancelledOperation }
-            try consumer(data)
-            progress?.completedUnitCount += Int64(data.count)
-        })
-    }
-
-    private func readCompressed(entry: Entry, bufferSize: UInt32, skipCRC32: Bool,
-                                progress: Progress? = nil, with consumer: Consumer) throws -> CRC32 {
-        let size = Int(entry.centralDirectoryStructure.compressedSize)
-        return try Data.decompress(size: size, bufferSize: Int(bufferSize), skipCRC32: skipCRC32,
-                                   provider: { (_, chunkSize) -> Data in
-            return try Data.readChunk(of: chunkSize, from: self.archiveFile)
-        }, consumer: { (data) in
-            if progress?.isCancelled == true { throw ArchiveError.cancelledOperation }
-            try consumer(data)
-            progress?.completedUnitCount += Int64(data.count)
-        })
     }
 }

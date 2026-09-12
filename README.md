@@ -3,11 +3,11 @@
 [![Swift Package Manager compatible](https://img.shields.io/badge/SPM-compatible-brightgreen.svg)](https://github.com/apple/swift-package-manager)
 [![Carthage compatible](https://img.shields.io/badge/Carthage-compatible-4BC51D.svg?style=flat)](https://github.com/Carthage/Carthage)
 [![CocoaPods Compatible](https://img.shields.io/cocoapods/v/ZIPFoundation.svg)](https://cocoapods.org/pods/ZIPFoundation)
-[![Platform](https://img.shields.io/badge/Platforms-macOS%20|%20iOS%20|%20tvOS%20|%20watchOS%20|%20Linux-lightgrey.svg)](https://github.com/weichsel/ZIPFoundation)
+[![Platform](https://img.shields.io/badge/Platforms-macOS%20|%20iOS%20|%20tvOS%20|%20watchOS%20|%20visionOS%20|%20Linux-lightgrey.svg)](https://github.com/weichsel/ZIPFoundation)
 [![Twitter](https://img.shields.io/badge/twitter-@weichsel-blue.svg?style=flat)](http://twitter.com/weichsel)
 
-ZIP Foundation is a library to create, read and modify ZIP archive files.  
-It is written in Swift and based on [Apple's libcompression](https://developer.apple.com/documentation/compression) for high performance and energy efficiency.  
+ZIP Foundation is a library to create, read and modify ZIP archive files.
+It is written in Swift and based on [Apple's libcompression](https://developer.apple.com/documentation/compression) for high performance and energy efficiency.
 To learn more about the performance characteristics of the framework, you can read [this blog post](https://thomas.zoechling.me/journal/2017/07/ZIPFoundation.html).
 
 - [Features](#features)
@@ -30,6 +30,8 @@ To learn more about the performance characteristics of the framework, you can re
 
 - [x] Modern Swift API
 - [x] High Performance Compression and Decompression
+- [x] Large File Support
+- [x] In-Memory Archives
 - [x] Deterministic Memory Consumption
 - [x] Linux compatibility
 - [x] No 3rd party dependencies (on Apple platforms, zlib on Linux)
@@ -38,7 +40,7 @@ To learn more about the performance characteristics of the framework, you can re
 
 ## Requirements
 
-- iOS 12.0+ / macOS 10.11+ / tvOS 12.0+ / watchOS 2.0+
+- iOS 12.0+ / macOS 10.11+ / tvOS 12.0+ / watchOS 2.0+ / visionOS 1.0+
 - Or Linux with zlib development package
 - Xcode 11.0
 - Swift 4.0
@@ -46,7 +48,7 @@ To learn more about the performance characteristics of the framework, you can re
 ## Installation
 
 ### Swift Package Manager
-The Swift Package Manager is a dependency manager integrated with the Swift build system. To learn how to use the Swift Package Manager for your project, please read the [official documentation](https://github.com/apple/swift-package-manager/blob/master/Documentation/Usage.md).  
+The Swift Package Manager is a dependency manager integrated with the Swift build system. To learn how to use the Swift Package Manager for your project, please read the [official documentation](https://docs.swift.org/swiftpm/documentation/packagemanagerdocs/).
 To add ZIP Foundation as a dependency, you have to add it to the `dependencies` of your `Package.swift` file and refer to that dependency in your `target`.
 
 ```swift
@@ -115,9 +117,6 @@ $ pod install
 ZIP Foundation provides two high level methods to zip and unzip items. Both are implemented as extension of `FileManager`.  
 The functionality of those methods is modeled after the behavior of the Archive Utility in macOS.  
 
-_Note_: There is a large performance discrepancy between `Debug` and `Release` builds of ZIP Foundation.  
-The main performance bottleneck is the code that calculates `CRC32` checksums. This codepath executes slowly when Swift optimizations are turned off (`-Onone`). To avoid long wait times when debugging code that extracts archives, the `skipCRC32` flag can be set. To learn more about the `skipCRC32` parameter, please refer to the documentation strings of the `Archive.extract` and `FileManager.unzipItem` methods. Skippig CRC32 checks should only be enabled during debugging. 
-
 ### Zipping Files and Directories
 To zip a single file you simply pass a file URL representing the item you want to zip and a destination URL to `FileManager.zipItem(at sourceURL: URL, to destinationURL: URL)`:
 
@@ -169,9 +168,7 @@ let fileManager = FileManager()
 let currentWorkingPath = fileManager.currentDirectoryPath
 var archiveURL = URL(fileURLWithPath: currentWorkingPath)
 archiveURL.appendPathComponent("archive.zip")
-guard let archive = Archive(url: archiveURL, accessMode: .read) else  {
-    return
-}
+let archive = try Archive(url: archiveURL, accessMode: .read)
 guard let entry = archive["file.txt"] else {
     return
 }
@@ -191,12 +188,11 @@ You can find detailed information about that parameters in the method's document
 To create a new `Archive`, pass in a non-existing file URL and `AccessMode.create`.
 
 ```swift
+let fileManager = FileManager()
 let currentWorkingPath = fileManager.currentDirectoryPath
 var archiveURL = URL(fileURLWithPath: currentWorkingPath)
 archiveURL.appendPathComponent("newArchive.zip")
-guard let archive = Archive(url: archiveURL, accessMode: .create) else  {
-    return
-}
+let archive = try Archive(url: archiveURL, accessMode: .create)
 ```
 
 ### Adding and Removing Entries
@@ -210,9 +206,7 @@ let fileManager = FileManager()
 let currentWorkingPath = fileManager.currentDirectoryPath
 var archiveURL = URL(fileURLWithPath: currentWorkingPath)
 archiveURL.appendPathComponent("archive.zip")
-guard let archive = Archive(url: archiveURL, accessMode: .update) else  {
-    return
-}
+let archive = try Archive(url: archiveURL, accessMode: .update)
 var fileURL = URL(fileURLWithPath: currentWorkingPath)
 fileURL.appendPathComponent("file.txt")
 do {
@@ -257,9 +251,9 @@ You can also add entries from an in-memory data source. To do this you have to p
 ```swift
 let string = "abcdefghijkl"
 guard let data = string.data(using: .utf8) else { return }
-try? archive.addEntry(with: "fromMemory.txt", type: .file, uncompressedSize: UInt32(string.count), bufferSize: 4, provider: { (position, size) -> Data in
+try? archive.addEntry(with: "fromMemory.txt", type: .file, uncompressedSize: Int64(data.count), bufferSize: 4, provider: { (position, size) -> Data in
     // This will be called until `data` is exhausted (3x in this case).
-    return data.subdata(in: position..<position+size)
+    return data.subdata(in: Data.Index(position)..<Int(position)+size)
 })
 ```
 The closure is called until enough data has been provided to create an entry of `uncompressedSize`. The closure receives `position` and `size` arguments 
@@ -275,11 +269,11 @@ To _create_ an in-memory archive, the `data` parameter can be omitted:
 
 ```swift
 let string = "Some string!"
-guard let archive = Archive(accessMode: .create),
-        let data = string.data(using: .utf8) else { return }
-    try? archive.addEntry(with: "inMemory.txt", type: .file, uncompressedSize: UInt32(string.count), bufferSize: 4, provider: { (position, size) -> Data in
-        return data.subdata(in: position..<position+size)
-    })
+let archive = try Archive(accessMode: .create)
+guard let data = string.data(using: .utf8) else { return }
+try archive.addEntry(with: "inMemory.txt", type: .file, uncompressedSize: Int64(data.count), bufferSize: 4, provider: { (position, size) -> Data in
+    return data.subdata(in: Data.Index(position)..<Int(position)+size)
+})
 let archiveData = archive.data
 ```
 

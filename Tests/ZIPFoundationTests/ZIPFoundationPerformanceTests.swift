@@ -2,7 +2,7 @@
 //  ZIPFoundationPerformanceTests.swift
 //  ZIPFoundation
 //
-//  Copyright © 2017-2021 Thomas Zoechling, https://www.peakstep.com and the ZIP Foundation project authors.
+//  Copyright © 2017-2026 Thomas Zoechling, https://www.peakstep.com and the ZIP Foundation project authors.
 //  Released under the MIT License.
 //
 //  See https://github.com/weichsel/ZIPFoundation/blob/master/LICENSE for license information.
@@ -12,6 +12,7 @@ import XCTest
 @testable import ZIPFoundation
 
 extension ZIPFoundationTests {
+
     func testPerformanceWriteUncompressed() {
         let archive = self.archive(for: #function, mode: .create)
         let size = 1024*1024*20
@@ -20,11 +21,11 @@ extension ZIPFoundationTests {
         measure {
             do {
                 try archive.addEntry(with: entryName, type: .file,
-                                     uncompressedSize: UInt32(size),
+                                     uncompressedSize: Int64(size),
                                      compressionMethod: .none,
                                      provider: { (position, bufferSize) -> Data in
-                                        let upperBound = Swift.min(size, position + bufferSize)
-                                        let range = Range(uncheckedBounds: (lower: position, upper: upperBound))
+                                        let upperBound = Swift.min(size, Int(position) + bufferSize)
+                                        let range = Range(uncheckedBounds: (lower: Int(position), upper: upperBound))
                                         return data.subdata(in: range)
                 })
             } catch {
@@ -40,11 +41,11 @@ extension ZIPFoundationTests {
         let entryName = ProcessInfo.processInfo.globallyUniqueString
         do {
             try archive.addEntry(with: entryName, type: .file,
-                                 uncompressedSize: UInt32(size),
+                                 uncompressedSize: Int64(size),
                                  compressionMethod: .none,
                                  provider: { (position, bufferSize) -> Data in
-                                    let upperBound = Swift.min(size, position + bufferSize)
-                                    let range = Range(uncheckedBounds: (lower: position, upper: upperBound))
+                                    let upperBound = Swift.min(size, Int(position) + bufferSize)
+                                    let range = Range(uncheckedBounds: (lower: Int(position), upper: upperBound))
                                     return data.subdata(in: range)
             })
         } catch {
@@ -71,11 +72,11 @@ extension ZIPFoundationTests {
         measure {
             do {
                 try archive.addEntry(with: entryName, type: .file,
-                                     uncompressedSize: UInt32(size),
+                                     uncompressedSize: Int64(size),
                                      compressionMethod: .deflate,
                                      provider: { (position, bufferSize) -> Data in
-                                        let upperBound = Swift.min(size, position + bufferSize)
-                                        let range = Range(uncheckedBounds: (lower: position, upper: upperBound))
+                                        let upperBound = Swift.min(size, Int(position) + bufferSize)
+                                        let range = Range(uncheckedBounds: (lower: Int(position), upper: upperBound))
                                         return data.subdata(in: range)
                 })
             } catch {
@@ -91,11 +92,11 @@ extension ZIPFoundationTests {
         let entryName = ProcessInfo.processInfo.globallyUniqueString
         do {
             try archive.addEntry(with: entryName, type: .file,
-                                 uncompressedSize: UInt32(size),
+                                 uncompressedSize: Int64(size),
                                  compressionMethod: .deflate,
                                  provider: { (position, bufferSize) -> Data in
-                                    let upperBound = Swift.min(size, position + bufferSize)
-                                    let range = Range(uncheckedBounds: (lower: position, upper: upperBound))
+                                    let upperBound = Swift.min(size, Int(position) + bufferSize)
+                                    let range = Range(uncheckedBounds: (lower: Int(position), upper: upperBound))
                                     return data.subdata(in: range)
             })
         } catch {
